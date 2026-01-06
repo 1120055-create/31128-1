@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>極速跑酷 - 魔法道具貓咪</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a1a2e;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        .menu-btn {
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        .menu-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.05);
+        }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(15, 15, 35, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+        .active-powerup {
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="flex justify-between items-start">
+            <div>
+                <div class="text-2xl font-bold text-pink-300">喵分: <span id="score-val">0</span></div>
+                <div class="text-sm opacity-80">最高紀錄: <span id="best-val">0</span></div>
+            </div>
+            <div id="active-powerups" class="flex flex-col gap-2 items-end">
+                <div class="text-xl text-yellow-200">能量: <span id="speed-val">1.0</span>x</div>
+                <!-- 動態顯示道具狀態 -->
+                <div id="shield-indicator" class="hidden px-3 py-1 bg-blue-500/50 rounded-full text-xs font-bold border border-blue-300">護盾激活中 🛡️</div>
+                <div id="invincible-indicator" class="hidden px-3 py-1 bg-yellow-500/50 rounded-full text-xs font-bold border border-yellow-300">無敵衝刺 ⚡</div>
+            </div>
+        </div>
+        <div class="text-center opacity-50 text-sm">
+            空格/點擊上方可跳躍 🐾 點擊下方可滑行
+        </div>
+    </div>
+
+    <div id="overlay">
+        <div class="text-center p-8 rounded-3xl bg-indigo-950/50 border border-white/20 shadow-2xl backdrop-blur-md">
+            <h1 class="text-5xl font-black mb-6 text-transparent bg-clip-text bg-gradient-to-r from-pink-300 to-blue-300">方塊跑酷貓</h1>
+            <p class="text-indigo-200 mb-8">收集魔法道具：🌟 星星加分、🛡️ 護盾、⚡ 無敵！</p>
+            <button id="start-btn" class="menu-btn px-12 py-4 rounded-full text-xl font-bold text-pink-100">開始挑戰喵！</button>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score-val');
+        const bestEl = document.getElementById('best-val');
+        const speedEl = document.getElementById('speed-val');
+        const overlay = document.getElementById('overlay');
+        const startBtn = document.getElementById('start-btn');
+        const shieldInd = document.getElementById('shield-indicator');
+        const invincInd = document.getElementById('invincible-indicator');
+
+        let gameState = 'START';
+        let score = 0;
+        let highScore = localStorage.getItem('parkourBest') || 0;
+        bestEl.innerText = highScore;
+
+        const GRAVITY = 0.52;
+        const JUMP_FORCE = -13.0;
+        const INITIAL_SPEED = 6;
+        const SPEED_INCREMENT = 0.0008;
+        
+        let player = {
+            x: 100,
+            y: 0,
+            width: 55,
+            height: 50,
+            vy: 0,
+            isGrounded: false,
+            isCrouching: false,
+            canDoubleJump: false,
+            rotation: 0,
+            color: '#FFB7C5',
+            squash: 1,
+            tailAngle: 0,
+            blinkTimer: 0,
+            isBlinking: false,
+            happyTimer: 0,
+            // 道具狀態
+            hasShield: false,
+            isInvincible: false,
+            invincibleTime: 0
+        };
+
+        let obstacles = [];
+        let items = []; 
+        let fallingBlocks = [];
+        let particles = [];
+        let stars = [];
+        let mountains = [];
+        let clouds = [];
+        let gameSpeed = INITIAL_SPEED;
+        let groundY = 0;
+
+        function initStars() {
+            stars = [];
+            for (let i = 0; i < 100; i++) {
+                stars.push({
+                    x: Math.random() * window.innerWidth,
+                    y: Math.random() * (window.innerHeight * 0.7),
+                    size: Math.random() * 2,
+                    opacity: Math.random(),
+                    blink: Math.random() * 0.05
+                });
+            }
+        }
+
+        function initMountains() {
+            mountains = [];
+            for (let i = 0; i < 5; i++) {
+                mountains.push({
+                    x: i * 400,
+                    width: 500 + Math.random() * 300,
+                    height: 100 + Math.random() * 150,
+                    color: i % 2 === 0 ? '#313244' : '#45475a'
+                });
+            }
+        }
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            groundY = canvas.height * 0.75;
+            initStars();
+            initMountains();
+            if (gameState === 'START' || gameState === 'GAMEOVER') player.y = groundY - player.height;
+        }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        window.addEventListener('keydown', (e) => {
+            if (gameState === 'PLAYING') {
+                if (e.code === 'Space' || e.code === 'ArrowUp') jump();
+                if (e.code === 'ArrowDown') player.isCrouching = true;
+            } else if (gameState === 'START' || gameState === 'GAMEOVER') {
+                if (e.code === 'Space') resetGame();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowDown') player.isCrouching = false;
+        });
+
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touchY = e.touches[0].clientY;
+            if (gameState === 'PLAYING') {
+                if (touchY < window.innerHeight / 2) jump();
+                else player.isCrouching = true;
+            } else if (gameState === 'START' || gameState === 'GAMEOVER') resetGame();
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', (e) => player.isCrouching = false);
+
+        function jump() {
+            if (player.isGrounded && !player.isCrouching) {
+                player.vy = JUMP_FORCE;
+                player.isGrounded = false;
+                player.canDoubleJump = true;
+                player.squash = 0.5;
+                createParticles(player.x + player.width/2, groundY, '#FFFFFF', 10);
+            } else if (player.canDoubleJump && !player.isCrouching) {
+                player.vy = JUMP_FORCE * 0.9;
+                player.canDoubleJump = false;
+                player.rotation = -Math.PI * 2;
+                player.happyTimer = 20;
+                clouds.push({ x: player.x + player.width/2, y: player.y + player.height, life: 1.0 });
+                createParticles(player.x + player.width/2, player.y + player.height, '#E3F2FD', 15);
+            }
+        }
+
+        startBtn.addEventListener('click', resetGame);
+
+        function resetGame() {
+            score = 0;
+            gameSpeed = INITIAL_SPEED;
+            obstacles = [];
+            items = [];
+            fallingBlocks = [];
+            particles = [];
+            clouds = [];
+            player.isCrouching = false;
+            player.canDoubleJump = false;
+            player.hasShield = false;
+            player.isInvincible = false;
+            player.invincibleTime = 0;
+            player.rotation = 0;
+            player.y = groundY - player.height;
+            player.vy = 0;
+            player.happyTimer = 0;
+            gameState = 'PLAYING';
+            overlay.style.display = 'none';
+            shieldInd.classList.add('hidden');
+            invincInd.classList.add('hidden');
+        }
+
+        function createParticles(x, y, color, count, type = 'circle') {
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * 8,
+                    vy: (Math.random() - 0.5) * 8,
+                    size: Math.random() * 5 + 3,
+                    life: 1.0,
+                    color: color,
+                    type: type
+                });
+            }
+        }
+
+        function spawnObstacle() {
+            const minGap = 450;
+            const lastObstacle = obstacles[obstacles.length - 1];
+            if (!lastObstacle || (canvas.width - lastObstacle.x) > minGap + Math.random() * 400) {
+                const isTall = Math.random() > 0.7;
+                const size = 50 + Math.random() * 20;
+                obstacles.push({
+                    x: canvas.width,
+                    y: isTall ? groundY - size * 2 : groundY - size,
+                    width: size, 
+                    height: isTall ? size * 2 : size,
+                    isTall: isTall,
+                    hue: Math.random() * 360
+                });
+            }
+        }
+
+        function spawnItem() {
+            if (Math.random() < 0.03) {
+                let typeRand = Math.random();
+                let type = 'star'; 
+                if (typeRand > 0.9) type = 'invinc'; 
+                else if (typeRand > 0.75) type = 'shield'; 
+                
+                items.push({
+                    x: canvas.width,
+                    y: groundY - 60 - Math.random() * 180,
+                    size: 18, 
+                    angle: 0,
+                    type: type
+                });
+            }
+        }
+
+        function spawnFallingBlock() {
+            const chance = 0.007 + (score * 0.00001);
+            if (Math.random() < chance) {
+                fallingBlocks.push({
+                    x: canvas.width + 100 + Math.random() * 300,
+                    y: -100, width: 45, height: 45,
+                    vy: 3.5 + Math.random() * 3,
+                    vx: -(gameSpeed + 1),
+                    color: '#FF5252',
+                    hasLanded: false
+                });
+            }
+        }
+
+        function handleCollision() {
+            if (player.isInvincible) return; 
+            
+            if (player.hasShield) {
+                player.hasShield = false;
+                shieldInd.classList.add('hidden');
+                createParticles(player.x + player.width/2, player.y + player.height/2, '#4FC3F7', 20);
+                obstacles = obstacles.filter(o => o.x > player.x + 300 || o.x < player.x);
+                fallingBlocks = [];
+                return;
+            }
+            
+            gameOver();
+        }
+
+        function update() {
+            if (gameState !== 'PLAYING') return;
+
+            player.vy += GRAVITY;
+            player.y += player.vy;
+
+            const targetHeight = player.isCrouching ? 25 : 50;
+            player.squash += (1 - player.squash) * 0.15;
+            
+            if (player.rotation < 0) player.rotation += 0.25;
+            if (player.rotation > 0) player.rotation = 0;
+
+            if (player.y + targetHeight > groundY) {
+                if (!player.isGrounded) player.squash = 1.5;
+                player.y = groundY - targetHeight;
+                player.vy = 0;
+                player.isGrounded = true;
+                player.canDoubleJump = false;
+                player.rotation = 0;
+            }
+
+            if (player.isInvincible) {
+                player.invincibleTime--;
+                if (player.invincibleTime <= 0) {
+                    player.isInvincible = false;
+                    invincInd.classList.add('hidden');
+                }
+            }
+
+            player.blinkTimer--;
+            if (player.blinkTimer <= 0) {
+                player.isBlinking = !player.isBlinking;
+                player.blinkTimer = player.isBlinking ? 8 : 100 + Math.random() * 200;
+            }
+            if (player.happyTimer > 0) player.happyTimer--;
+
+            player.tailAngle = Math.sin(Date.now() * 0.006) * 0.4;
+            gameSpeed += SPEED_INCREMENT;
+            score += 0.1;
+            scoreEl.innerText = Math.floor(score);
+            speedEl.innerText = (gameSpeed / INITIAL_SPEED).toFixed(1);
+
+            spawnObstacle();
+            spawnItem();
+            spawnFallingBlock();
+            
+            stars.forEach(s => {
+                s.opacity += s.blink;
+                if (s.opacity > 1 || s.opacity < 0.2) s.blink *= -1;
+                s.x -= gameSpeed * 0.02;
+                if (s.x < 0) s.x = canvas.width;
+            });
+
+            mountains.forEach(m => {
+                m.x -= gameSpeed * 0.15;
+                if (m.x + m.width < 0) m.x = canvas.width;
+            });
+
+            for (let i = clouds.length - 1; i >= 0; i--) {
+                clouds[i].life -= 0.03;
+                clouds[i].x -= gameSpeed * 0.5;
+                if (clouds[i].life <= 0) clouds.splice(i, 1);
+            }
+
+            for (let i = items.length - 1; i >= 0; i--) {
+                let item = items[i];
+                if (!item) continue;
+                item.x -= gameSpeed;
+                item.angle += 0.1;
+                let dx = (player.x + player.width/2) - item.x;
+                let dy = (player.y + targetHeight/2) - item.y;
+                let dist = Math.sqrt(dx*dx + dy*dy);
+                
+                if (dist < 180) { item.x += dx * 0.12; item.y += dy * 0.12; }
+                
+                if (dist < 40) {
+                    player.happyTimer = 40;
+                    if (item.type === 'star') {
+                        score += 50;
+                        createParticles(item.x, item.y, '#FFD54F', 15, 'star');
+                    } else if (item.type === 'shield') {
+                        player.hasShield = true;
+                        shieldInd.classList.remove('hidden');
+                        createParticles(item.x, item.y, '#4FC3F7', 20, 'circle');
+                    } else if (item.type === 'invinc') {
+                        player.isInvincible = true;
+                        player.invincibleTime = 300; 
+                        invincInd.classList.remove('hidden');
+                        createParticles(item.x, item.y, '#FFF176', 25, 'star');
+                    }
+                    items.splice(i, 1);
+                    continue;
+                }
+                if (item.x + item.size < -50) items.splice(i, 1);
+            }
+
+            for (let i = fallingBlocks.length - 1; i >= 0; i--) {
+                let fb = fallingBlocks[i];
+                if (!fb) continue;
+                fb.x += fb.vx; fb.y += fb.vy;
+                const pHeight = player.isCrouching ? 25 : 50;
+                if (player.x < fb.x + fb.width && player.x + player.width > fb.x && player.y < fb.y + fb.height && player.y + pHeight > fb.y) {
+                    handleCollision();
+                    // 如果沒死，方塊也該消失避免重複碰撞
+                    if (gameState === 'PLAYING') fallingBlocks.splice(i, 1);
+                    continue;
+                }
+                if (fb.y + fb.height > groundY && !fb.hasLanded) {
+                    fb.vy = -3; fb.hasLanded = true;
+                    createParticles(fb.x + fb.width/2, groundY, '#FF5252', 8);
+                }
+                if (fb.x + fb.width < -100 || fb.y > canvas.height) fallingBlocks.splice(i, 1);
+            }
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                let obs = obstacles[i];
+                if (!obs) continue;
+                obs.x -= gameSpeed;
+                const pHeight = player.isCrouching ? 25 : 50;
+                if (player.x + 12 < obs.x + obs.width && player.x + player.width - 12 > obs.x && player.y + 12 < obs.y + obs.height && player.y + pHeight - 8 > obs.y) {
+                    handleCollision();
+                    continue;
+                }
+                if (obs.x + obs.width < -50) obstacles.splice(i, 1);
+            }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx - gameSpeed * 0.2; p.y += p.vy;
+                p.life -= 0.025;
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            if (score > highScore) {
+                highScore = Math.floor(score);
+                localStorage.setItem('parkourBest', highScore);
+                bestEl.innerText = highScore;
+            }
+            overlay.style.display = 'flex';
+            overlay.querySelector('h1').innerText = '嗚喵！撞到了';
+            overlay.querySelector('p').innerText = `這次拿到了 ${Math.floor(score)} 分！`;
+            startBtn.innerText = '再次挑戰！';
+        }
+
+        function roundRect(x, y, w, h, r) {
+            ctx.beginPath(); ctx.moveTo(x + r, y);
+            ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+            ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r);
+            ctx.closePath(); ctx.fill();
+        }
+
+        function drawHeart(x, y, size) {
+            ctx.beginPath(); ctx.moveTo(x, y + size / 4);
+            ctx.quadraticCurveTo(x, y, x + size / 4, y); ctx.quadraticCurveTo(x + size / 2, y, x + size / 2, y + size / 4);
+            ctx.quadraticCurveTo(x + size / 2, y, x + (size * 3) / 4, y); ctx.quadraticCurveTo(x + size, y, x + size, y + size / 4);
+            ctx.quadraticCurveTo(x + size, y + size / 2, x + size / 2, y + size); ctx.quadraticCurveTo(x, y + size / 2, x, y + size / 4);
+            ctx.fill();
+        }
+
+        function drawStar(x, y, size) {
+            let rot = Math.PI / 2 * 3; let step = Math.PI / 5;
+            ctx.beginPath(); ctx.moveTo(x, y - size);
+            for(let i=0; i<5; i++) {
+                ctx.lineTo(x + Math.cos(rot)*size, y + Math.sin(rot)*size); rot += step;
+                ctx.lineTo(x + Math.cos(rot)*size/2, y + Math.sin(rot)*size/2); rot += step;
+            }
+            ctx.closePath(); ctx.fill();
+        }
+
+        function drawObstacleCube(obs) {
+            const hue = obs.hue;
+            const x = obs.x;
+            const y = obs.y;
+            const w = obs.width;
+            const h = obs.height;
+            const bevel = 8;
+            ctx.fillStyle = `hsl(${hue}, 60%, 40%)`;
+            roundRect(x, y, w, h, bevel);
+            ctx.fillStyle = `hsl(${hue}, 60%, 60%)`;
+            ctx.beginPath();
+            ctx.moveTo(x + bevel, y); ctx.lineTo(x + w - bevel, y); ctx.lineTo(x + w - bevel*2, y + bevel); ctx.lineTo(x + bevel*2, y + bevel);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = `hsl(${hue}, 80%, 75%)`; ctx.globalAlpha = 0.5;
+            ctx.fillRect(x + w * 0.2, y + h * 0.2, w * 0.15, h * 0.15);
+            ctx.fillRect(x + w * 0.6, y + h * 0.5, w * 0.2, h * 0.1);
+            ctx.globalAlpha = 1.0;
+            ctx.strokeStyle = `hsl(${hue}, 90%, 80%)`; ctx.lineWidth = 2; ctx.stroke();
+        }
+
+        function draw() {
+            let skyGrad = ctx.createLinearGradient(0, 0, 0, groundY);
+            skyGrad.addColorStop(0, '#0f0c29'); skyGrad.addColorStop(1, '#24243e');
+            ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, canvas.width, groundY);
+
+            stars.forEach(s => {
+                ctx.globalAlpha = s.opacity; ctx.fillStyle = 'white';
+                ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2); ctx.fill();
+            });
+            ctx.globalAlpha = 1.0;
+
+            mountains.forEach(m => {
+                ctx.fillStyle = m.color;
+                ctx.beginPath(); ctx.moveTo(m.x, groundY); ctx.lineTo(m.x + m.width/2, groundY - m.height); ctx.lineTo(m.x + m.width, groundY); ctx.closePath(); ctx.fill();
+            });
+
+            clouds.forEach(c => {
+                ctx.globalAlpha = c.life * 0.6; ctx.fillStyle = 'white';
+                ctx.beginPath(); 
+                ctx.arc(c.x, c.y, 15, 0, Math.PI*2); ctx.arc(c.x-12, c.y+5, 10, 0, Math.PI*2); ctx.arc(c.x+12, c.y+5, 10, 0, Math.PI*2);
+                ctx.fill();
+            });
+            ctx.globalAlpha = 1.0;
+
+            ctx.fillStyle = '#1e1e2e'; ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+            ctx.strokeStyle = '#45475a'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(canvas.width, groundY); ctx.stroke();
+
+            fallingBlocks.forEach(fb => {
+                ctx.fillStyle = fb.color; roundRect(fb.x, fb.y, fb.width, fb.height, 8);
+                ctx.strokeStyle = '#ff8a80'; ctx.stroke();
+            });
+
+            items.forEach(item => {
+                ctx.save();
+                ctx.translate(item.x, item.y + Math.sin(item.angle * 0.5) * 8);
+                ctx.rotate(item.angle * 0.3);
+                
+                if (item.type === 'star') {
+                    ctx.shadowBlur = 15; ctx.shadowColor = '#FFF176';
+                    ctx.fillStyle = '#FFF176';
+                    drawStar(0, 0, item.size);
+                } else if (item.type === 'shield') {
+                    ctx.shadowBlur = 15; ctx.shadowColor = '#4FC3F7';
+                    ctx.fillStyle = '#4FC3F7';
+                    ctx.beginPath(); ctx.arc(0, 0, item.size, 0, Math.PI*2); ctx.fill();
+                    ctx.strokeStyle = 'white'; ctx.lineWidth = 2; ctx.stroke();
+                    ctx.fillStyle = 'white'; ctx.font = '12px Arial'; ctx.textAlign = 'center'; ctx.fillText('🛡️', 0, 5);
+                } else if (item.type === 'invinc') {
+                    ctx.shadowBlur = 20; ctx.shadowColor = '#FFEB3B';
+                    ctx.fillStyle = '#FFEB3B';
+                    ctx.beginPath(); ctx.moveTo(0, -item.size); ctx.lineTo(item.size, 0); ctx.lineTo(-2, 2); ctx.lineTo(4, item.size); ctx.lineTo(-item.size, 0); ctx.lineTo(2, -2); ctx.closePath(); ctx.fill();
+                    ctx.fillStyle = 'white'; ctx.font = '12px Arial'; ctx.textAlign = 'center'; ctx.fillText('⚡', 0, 5);
+                }
+                ctx.restore();
+            });
+
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+                if (p.type === 'heart') drawHeart(p.x, p.y, p.size);
+                else if (p.type === 'star') drawStar(p.x, p.y, p.size);
+                else { ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill(); }
+            });
+            ctx.globalAlpha = 1.0;
+
+            obstacles.forEach(obs => { drawObstacleCube(obs); });
+
+            ctx.save();
+            const pHeight = player.isCrouching ? 25 : 50;
+            const pWidth = player.isCrouching ? 75 : 55;
+            let drawW = pWidth * (2 - player.squash);
+            let drawH = pHeight * player.squash;
+            ctx.translate(player.x + player.width/2, groundY - (groundY - (player.y + pHeight)) - drawH/2);
+            ctx.rotate(player.rotation);
+            
+            if (player.isInvincible) {
+                ctx.shadowBlur = 30; ctx.shadowColor = '#FFF176';
+            }
+
+            if (player.hasShield) {
+                ctx.strokeStyle = 'rgba(79, 195, 247, 0.6)';
+                ctx.lineWidth = 5;
+                ctx.beginPath(); ctx.arc(0, 0, drawW * 0.8, 0, Math.PI*2); ctx.stroke();
+            }
+
+            ctx.save();
+            ctx.translate(-drawW/2 + 5, drawH/4);
+            ctx.rotate(player.isCrouching ? -1.2 : (player.isGrounded ? player.tailAngle : 0.8));
+            ctx.fillStyle = player.color;
+            roundRect(-35, -6, 40, 12, 6);
+            ctx.restore();
+
+            ctx.fillStyle = player.color;
+            roundRect(-drawW/2, -drawH/2, drawW, drawH, 20);
+            ctx.shadowBlur = 0;
+
+            let earY = -drawH/2;
+            ctx.fillStyle = player.color;
+            ctx.beginPath(); ctx.moveTo(-drawW/2+8, earY+8); ctx.lineTo(-drawW/2-6, earY-(player.isCrouching?5:22)); ctx.lineTo(-drawW/2+25, earY+8); ctx.fill();
+            ctx.beginPath(); ctx.moveTo(drawW/2-8, earY+8); ctx.lineTo(drawW/2+6, earY-(player.isCrouching?5:22)); ctx.lineTo(drawW/2-25, earY+8); ctx.fill();
+
+            let eyeY = -drawH/5;
+            if (player.happyTimer > 0) {
+                ctx.strokeStyle = '#45475a'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+                ctx.beginPath(); ctx.arc(-drawW/5, eyeY, 6, Math.PI, 0); ctx.stroke();
+                ctx.beginPath(); ctx.arc(drawW/5, eyeY, 6, Math.PI, 0); ctx.stroke();
+            } else if (player.isBlinking) {
+                ctx.strokeStyle = '#45475a'; ctx.lineWidth = 3;
+                ctx.beginPath(); ctx.moveTo(-drawW/5-6, eyeY); ctx.lineTo(-drawW/5+6, eyeY); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(drawW/5-6, eyeY); ctx.lineTo(drawW/5+6, eyeY); ctx.stroke();
+            } else {
+                ctx.fillStyle = '#45475a';
+                ctx.beginPath(); ctx.arc(-drawW/5, eyeY, player.isCrouching?4:7, 0, Math.PI*2); ctx.arc(drawW/5, eyeY, player.isCrouching?4:7, 0, Math.PI*2); ctx.fill();
+            }
+            ctx.fillStyle = '#FF8A80'; ctx.beginPath(); ctx.arc(0, eyeY + 6, 3.5, 0, Math.PI*2); ctx.fill();
+            ctx.restore();
+
+            requestAnimationFrame(() => { update(); draw(); });
+        }
+        draw();
+    </script>
+</body>
+</html>
